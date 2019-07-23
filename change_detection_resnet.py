@@ -4,16 +4,22 @@ Created on Thu Jul 18 11:48:11 2019
 
 @author: Angelo Antonio Manzatto
 
-Article:
+@references:
     
+This project was made using as reference Change Detection Net (CDNET):
+Link: http://jacarini.dinf.usherbrooke.ca/
+ 
+Article of Reference:
 Y. Wang, P.-M. Jodoin, F. Porikli, J. Konrad, Y. Benezeth, and P. Ishwar, CDnet 2014: 
 An Expanded Change Detection Benchmark Dataset, in Proc. IEEE Workshop on Change Detection (CDW-2014) at CVPR-2014, pp. 387-394. 2014
+
 """
 
 ##################################################################################
 # Libraries
 ##################################################################################  
 import os
+import csv
 import requests
 import io
 import glob
@@ -40,15 +46,18 @@ from keras.callbacks import ModelCheckpoint, CSVLogger
 # Download Dataset
 ##################################################################################  
 
-# Cria diretorio caso não exista
 dataset_folder = 'dataset'
+database_name = 'turnpike_0_5fps'
 
-# Donwload dataset if doesn't exist
+# Dataset Link
+url = 'http://jacarini.dinf.usherbrooke.ca/static/dataset/lowFramerate/turnpike_0_5fps.zip'   
+
+# Create Dataset folder 
 if not os.path.exists(dataset_folder):
     os.makedirs(dataset_folder)
 
-    # Direct Link to Change Detection Dataset
-    url = 'http://jacarini.dinf.usherbrooke.ca/static/dataset/lowFramerate/turnpike_0_5fps.zip'   
+# Donwload dataset if doesn't exist
+if not os.path.exists(os.path.join(dataset_folder,database_name)):
     
     # Request files
     r = requests.get(url, allow_redirects=True)
@@ -58,21 +67,24 @@ if not os.path.exists(dataset_folder):
     z.extractall(dataset_folder)
 
 ############################################################################################
-# Files and folders and default parameters
+# Files and folders
 ############################################################################################
-
-database_name = 'turnpike_0_5fps'
-
+    
+# Folders for input images and ground truth images    
 input_folder = os.path.join(dataset_folder,database_name,'input')
 gt_folder = os.path.join(dataset_folder,database_name,'groundtruth')
 
-# This file defines the split between background capture and real ROI detection 
+# This file defines the index of the images with and withoud a ground truth
 temporalROI_file = os.path.join(dataset_folder,database_name,'temporalROI.txt')
 
 f = open(temporalROI_file, "r")
 background_idx, roi_idx = f.readline().split()
+
+# Get indexes between just the background images provided for static model and images where we have a ground truth annotation
 background_idx = int(background_idx)
 roi_idx = int(roi_idx)
+
+# We have just 350 images labeled
 roi_images = 350
 f.close()
 
@@ -83,7 +95,6 @@ roi_mask_file = os.path.join(dataset_folder,database_name,'ROI.bmp')
 roi_image = plt.imread(roi_file)
 roi_mask = plt.imread(roi_mask_file)
 
-# Plot original vs corrected chess image
 f, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 8))
 f.tight_layout()
 ax1.imshow(roi_image)
@@ -100,9 +111,13 @@ plt.subplots_adjust(left=0., right=1, top=0.9, bottom=0.)
 input_image_files = glob.glob(os.path.join(input_folder,'*.jpg'))  
 gt_image_files = glob.glob(os.path.join(gt_folder,'*.png'))   
 
+# Sort names to avoid connecting wrong numbered files
 input_image_files.sort()
 gt_image_files.sort()
 
+assert(len(input_image_files) == len(gt_image_files))
+
+# Our dataset is created using the tuple (input image file, ground truth image file)
 data = []
 for input_image, gt_image in zip(input_image_files,gt_image_files):
     
@@ -112,12 +127,12 @@ for input_image, gt_image in zip(input_image_files,gt_image_files):
 background_data = data[:background_idx-1]
 
 # This data will be used to train / test the model
-roi_data = data[background_idx-1:background_idx-1+roi_images]
+train_test_data = data[background_idx-1:background_idx-1+roi_images]
 
 # This data will be used to validate the model
 valid_data = data[background_idx-1+roi_images:]
 
-# Plot some samples from train data
+# Plot some samples from training set
 n_samples = 5
 
 for i in range(n_samples):
@@ -127,8 +142,8 @@ for i in range(n_samples):
     f.set_figwidth(12)
     
     # randomly select a sample
-    idx = np.random.randint(0, len(roi_data))
-    input_image_path, gt_image_path = roi_data[idx]
+    idx = np.random.randint(0, len(train_test_data))
+    input_image_path, gt_image_path = train_test_data[idx]
 
     input_image = plt.imread(input_image_path)
     gt_image = plt.imread(gt_image_path)
@@ -140,7 +155,8 @@ for i in range(n_samples):
     ax2.set_title('Ground Truth Image # {0}'.format(idx))
         
 ############################################################################################
-# Build a background model from a batch of images
+# Build a background model from a batch of images. We use this to create the static image 
+# that will be used to help training the model taking the average value from all files
 ############################################################################################
 def build_background_model(background_data):
     
@@ -234,8 +250,8 @@ def plot_transformation(transformation, n_samples = 3):
         f.set_figwidth(14)
 
         # randomly select a sample
-        idx = np.random.randint(0, len(roi_data))
-        input_image_path, gt_image_path = roi_data[idx]
+        idx = np.random.randint(0, len(train_test_data))
+        input_image_path, gt_image_path = train_test_data[idx]
 
         input_image = plt.imread(input_image_path)
         gt_image = plt.imread(gt_image_path)
@@ -447,6 +463,7 @@ def ChangeDetectionNet(input_shape=(224,224,6)):
     
     # Padding is an important step here unless you want an horrible border effect on the prediction
     decoder = ZeroPadding2D((1,1))(decoder)
+    
     decoder = Conv2DTranspose(8, kernel_size=(2,2),strides=(2,2))(decoder)
     decoder = MaxPooling2D(pool_size=(3,3),strides=(1,1))(decoder)
 
@@ -485,12 +502,12 @@ valid_transformations = [
 
 # Hyperparameters
 epochs = 200
-batch_size = 16
+batch_size = 4 # Change this value if you have more GPU Power
 learning_rate = 0.001
 weight_decay = 5e-4
 momentum = .9
 
-train_data, test_data = train_test_split(roi_data, test_size=0.20, random_state=42)
+train_data, test_data = train_test_split(train_test_data, test_size=0.20, random_state=42)
 
 background_image = build_background_model(background_data)
 
@@ -523,7 +540,7 @@ history = model.fit_generator(train_generator,steps_per_epoch=int(len(train_data
 ############################################################################################
 
 # If we want to test on a pre trained model use the following line
-model.load_weights(os.path.join(model_path,'change_detection-0.0438.h5'), by_name=False)
+# model.load_weights(os.path.join(model_path,'<path to model>'), by_name=False)
 
 n_samples = 5
 
@@ -569,7 +586,177 @@ for i in range(n_samples):
     combined_image[mask_pred == 0] = 0
     
     ax3.imshow(combined_image)
+    
+############################################################################################
+# Evaluate our model
+############################################################################################
 
+mask = MaskROI(roi_mask)
+
+measures = np.zeros((len(train_test_data),11))
+statistics = []
+    
+for i, sample in enumerate(train_test_data):
+    
+    # Retrieve tuple
+    input_image_path, gt_image_path = sample
+    
+    print("input: {0} , gt: {1}".format(input_image_path.split("\\")[-1],gt_image_path.split("\\")[-1]))
+    
+    # Read input file
+    input_image = plt.imread(input_image_path)
+    gt_image = plt.imread(gt_image_path)
+    
+    # Make a copy for safety
+    input_image_copy = np.copy(input_image)
+    background_image_copy = np.copy(background_image)
+    gt_image_copy = np.copy(gt_image)
+    
+    # Apply transformations to input and background image. This time we will not use the ground truth image 
+    # in the transformation step since we want to evaluate against the original data excluding the mask
+    for t in valid_transformations:
+        input_image_copy = t(input_image_copy)
+        background_image_copy = t(background_image_copy)
+
+    # Just remove the lower border of camera data
+    y_true = mask(gt_image_copy)
+    y_true = y_true[:,:,0]
+    
+    # Stack images to compose the input for model [H, W, 6]
+    X = np.uint8(np.concatenate([input_image_copy,background_image_copy],2))
+    
+    # Predict the mask using the model
+    y_pred = model.predict(stacked_image[np.newaxis,...]) 
+    
+    # Remove sinle dimensions
+    y_pred = np.squeeze(y_pred)
+    
+    # Resize output from model to original size from the ground truth
+    w,h = y_true.shape[:2]
+    resize = Resize((w,h))
+    y_pred = resize(y_pred)
+    
+    # Apply threshold value where we consider the predicted pixel as 1 and 0
+    y_pred[y_pred > 0.5] = 1.0
+    y_pred[y_pred <= 0.5] = 0.0
+    
+    y_true[y_true > 0.5] = 1.0
+    y_true[y_true <= 0.5] = 0.0
+        
+    # Calculate True Positive, True Negative, False Positive, False Negative
+    TP = np.sum(np.logical_and(y_pred == 1, y_true == 1))
+    TN = np.sum(np.logical_and(y_pred == 0, y_true == 0))
+    FP = np.sum(np.logical_and(y_pred == 1, y_true == 0))
+    FN = np.sum(np.logical_and(y_pred == 0, y_true == 1))
+
+    # Calculate Recall
+    recall = TP / (TP + FN)
+    
+    # Calculate Specificity
+    specificity =  TN / (TN + FP)
+    
+    # Calculate False Positive Rate
+    FPR =  FP / (FP + TN)
+    
+    # Calculate False Negative Rate
+    FNR = FN / (TP + FN)
+    
+    # Calculate Percentage of Wrong Classifications
+    PWC =  100 * (FN + FP) / (TP + FN + FP + TN)
+
+    # Calculate Precision
+    precision =  TP / (TP + FP)
+    
+    # Calculate f measure
+    f_measure = (2 * precision * recall) / (precision + recall)
+    
+    stats = { 'input_image': input_image_path,
+              'gt_image' : gt_image_path,
+              'TP' : TP,
+              'TN' : TN,
+              'FP' : FP,
+              'FN' : FN,
+              'recall' : recall,
+              'specificity' : specificity,
+              'FPR' : FPR,
+              'FNR' : FNR,
+              'PWC' : PWC,
+              'precision' : precision,
+              'f_measure' : f_measure
+            }
+    
+    statistics.append(stats)
+    
+    measures[i][0] = TP
+    measures[i][1] = TN
+    measures[i][2] = FP
+    measures[i][3] = FN
+    measures[i][4] = recall
+    measures[i][5] = specificity
+    measures[i][6] = FPR
+    measures[i][7] = FNR
+    measures[i][8] = PWC
+    measures[i][9] = precision
+    measures[i][10] = f_measure
+
+# Replace NaN by zeros
+measures[np.isnan(measures)] = 0
+
+# Calculate Mean Average for all our statistics
+mean_score = measures.mean(axis=0)
+max_score = measures.max(axis=0)
+min_score = measures.min(axis=0)
+
+# Print Average Statistics
+print(50*'-')
+print('Recal: Avg:{0:.2f} , Max: {1:.2f} , Min: {2:.2f}'.format(mean_score[4],max_score[4],min_score[4]))
+print(50*'-')
+print('Specificity: Avg:{0:.2f} , Max: {1:.2f} , Min: {2:.2f}'.format(mean_score[5],max_score[5],min_score[5]))
+print(50*'-')
+print('False Positive Rate: Avg:{0:.2f} , Max: {1:.2f} , Min: {2:.2f}'.format(mean_score[6],max_score[6],min_score[6]))
+print(50*'-')
+print('Calculate False Negative Rate: Avg:{0:.2f} , Max: {1:.2f} , Min: {2:.2f}'.format(mean_score[7],max_score[7],min_score[7]))
+print(50*'-')
+print('Percentage of Wrong Classifications: Avg:{0:.2f} , Max: {1:.2f} , Min: {2:.2f}'.format(mean_score[8],max_score[8],min_score[8]))
+print(50*'-')
+print('Precision: Avg:{0:.2f} , Max: {1:.2f} , Min: {2:.2f}'.format(mean_score[9],max_score[9],min_score[9]))
+print(50*'-')
+print('F-Measure: Avg:{0:.2f} , Max: {1:.2f} , Min: {2:.2f}'.format(mean_score[10],max_score[10],min_score[10]))
+print(50*'-')
+
+# Create Confusion Matrix
+cm = np.zeros((2,2))
+cm[0][0] = mean_score[0]
+cm[0][1] = mean_score[2]
+cm[1][0] = mean_score[3]
+cm[1][1] = mean_score[1]
+
+print(50*'-')
+print('Confusion Matrix')
+plt.matshow(cm)
+plt.colorbar()
+print(50*'-')
+
+# Save results on a file
+results_folder = 'results'
+
+# Create Dataset folder 
+if not os.path.exists(results_folder):
+    os.makedirs(results_folder)
+    
+csv_columns = ['input_image','gt_image','TP','TN','FP','FN','recall','specificity','FPR','FNR','PWC','precision','f_measure']
+
+csv_file = os.path.join(results_folder,database_name + '_stats.csv')
+
+try:
+    with open(csv_file, 'w') as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=csv_columns, lineterminator = '\n')
+        writer.writeheader()
+        for data in statistics:
+            writer.writerow(data)
+except IOError:
+    print("I/O error") 
+    
 ############################################################################################
 # Video Testing
 ############################################################################################    
